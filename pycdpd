@@ -1,0 +1,551 @@
+#!/usr/bin/python3
+# -*- coding: utf-8 -*-
+import os
+import sys
+import json
+import time
+import signal
+import socket
+import struct
+import argparse
+import platform
+import ipaddress
+import subprocess
+from functools import lru_cache
+
+__author__ = "Manuel Frei"
+__credits__ = ["Manuel Frei"]
+__license__ = "GPLv3"
+__version__ = "0.1"
+__maintainer__ = "Manuel Frei"
+__email__ = "github@frei-style.net"
+__status__ = "Prototype"
+
+
+def exit_handler(signum, frame):
+    sys.exit(0)
+
+
+signal.signal(signal.SIGINT, exit_handler)
+
+
+def _get_interfaces_legacy():
+    """Provides a similar output like "ip -j addr show" for older systems with
+       outdated iproute2 packages"""
+
+    LIFE_TIME_FOREVER = 4294967295
+    interfaces = []
+
+    addr_info = subprocess.getoutput("ip -o addr show")
+    link_info = subprocess.getoutput("ip -o link show")
+
+    for line in link_info.split("\n"):
+        sline = line.replace("\\", "").split()
+        interface = {}
+
+        ifindex = sline[0].strip(":")
+        interface["ifindex"] = ifindex
+
+        ifname = sline[1].strip(":")
+        if "@" in ifname:
+            master = ifname.split("@")[1]
+            interface["master"] = master
+            ifname = ifname.split("@")[0]
+        interface["ifname"] = ifname
+
+        flags = sline[2].strip("<").strip(">").split(",")
+        interface["flags"] = flags
+
+        mtu = sline[sline.index("mtu") + 1]
+        interface["mtu"] = int(mtu)
+
+        group = sline[sline.index("group") + 1]
+        interface["group"] = group
+
+        operstate = sline[sline.index("state") + 1]
+        interface["operstate"] = operstate
+
+        qdisc = sline[sline.index("qdisc") + 1]
+        interface["qdisc"] = qdisc
+
+        txqlen = sline[sline.index("qlen") + 1]
+        interface["txqlen"] = int(txqlen)
+
+        link_type = [word.split("/")[1] for word in sline
+                     if word.startswith("link/")][0]
+        interface["link_type"] = link_type
+
+        address = sline[sline.index(f"link/{link_type}") + 1]
+        interface["address"] = address
+
+        broadcast = sline[sline.index("brd") + 1]
+        interface["broadcast"] = broadcast
+
+        interface["addr_info"] = []
+
+        interfaces.append(interface)
+
+    for line in addr_info.split("\n"):
+        sline = line.replace("\\", "").split()
+        addr_info = {}
+
+        ifindex = sline[0].strip(":")
+        ifname = sline[1]
+
+        family = sline[2]
+        addr_info["family"] = family
+
+        local, prefixlen = sline[sline.index(f"{family}") + 1].split("/")
+        addr_info["local"] = local
+        addr_info["prefixlen"] = prefixlen
+
+        if "brd" in sline:
+            broadcast = sline[sline.index("brd") + 1]
+            addr_info["broadcast"] = broadcast
+
+        scope = sline[sline.index("scope") + 1]
+        addr_info["scope"] = scope
+
+        valid_life_time = sline[sline.index("valid_lft") + 1]
+        valid_life_time = valid_life_time.replace("sec", "")
+        if valid_life_time == "forever":
+            valid_life_time = LIFE_TIME_FOREVER
+        else:
+            valid_life_time = int(valid_life_time)
+        addr_info["valid_life_time"] = valid_life_time
+
+        preferred_life_time = sline[sline.index("preferred_lft") + 1]
+        preferred_life_time = preferred_life_time.replace("sec", "")
+        if preferred_life_time == "forever":
+            preferred_life_time = LIFE_TIME_FOREVER
+        else:
+            preferred_life_time = int(preferred_life_time)
+        addr_info["preferred_life_time"] = preferred_life_time
+
+        if "dynamic" in sline:
+            addr_info["dynamic"] = True
+
+        if "noprefixroute" in sline:
+            addr_info["noprefixroute"] = True
+
+        if "master" in sline:
+            master = sline[sline.index("master") + 1]
+            addr_info["master"] = master
+
+        if ifname in sline[2:]:
+            addr_info["label"] = ifname
+
+        interface_addr_info = [interface["addr_info"]
+                               for interface in interfaces
+                               if interface["ifindex"] == ifindex][0]
+        interface_addr_info.append(addr_info)
+
+    return interfaces
+
+
+def _get_interfaces():
+    return json.loads(subprocess.getoutput("ip -j addr show"))
+
+
+def get_interfaces():
+    # the ip utility from iproute2 supports the json flag since version v4.14.0
+    # https://github.com/shemminger/iproute2/commit/5df607725928d532a3b7e5095c04e943b2c3ce7f
+    # a compatibilty function is used to handle older versions
+    if "-j[son]" in subprocess.getoutput("ip help"):
+        return _get_interfaces()
+    return _get_interfaces_legacy()
+
+
+def get_addresses(interface_name):
+    interfaces = get_interfaces()
+    interface = [interface for interface in interfaces
+                 if interface["ifname"] == interface_name][0]
+
+    addrs = []
+    for addr_info in interface["addr_info"]:
+        addr = {}
+
+        addr_family = addr_info["family"]
+        if addr_family == "inet":
+            # IPv4
+            protocol_type = 1
+            protocol = 204  # 0xcc, IPv4
+            ip_address = ipaddress.IPv4Address(addr_info["local"])
+        elif addr_family == "inet6":
+            # IPv6
+            protocol_type = 2
+            protocol = 2048  # 0x0800, IPv6
+            ip_address = ipaddress.IPv6Address(addr_info["local"])
+        else:
+            continue
+
+        addr["ip_address"] = ip_address
+        addr["protocol_type"] = protocol_type
+        addr["protocol"] = protocol
+
+        addrs.append(addr)
+
+    return addrs
+
+
+def get_valid_interfaces():
+    interfaces = get_interfaces()
+    valid_interfaces = []
+    for interface in interfaces:
+        if (interface["operstate"] == "UP" and
+                interface["link_type"] == "ether"):
+            valid_interfaces.append((interface["ifname"],
+                                     interface["address"]))
+    return valid_interfaces
+
+
+@lru_cache(maxsize=1)
+def get_platform():
+    board_vendor_file = "/sys/class/dmi/id/board_vendor"
+    board_name_file = "/sys/class/dmi/id/board_name"
+    board_serial_file = "/sys/class/dmi/id/board_serial"
+
+    platform_files = [board_vendor_file, board_name_file, board_serial_file]
+
+    cdp_platform = []
+    for platform_file in platform_files:
+        if not os.path.isfile(platform_file):
+            raise RuntimeError("Platform detection failed." +
+                               f"'{platform_file}' not found.")
+
+        with open(platform_file) as f:
+            cdp_platform.append(f.readline().strip())
+
+    return f"{cdp_platform[0]} {cdp_platform[1]} ({cdp_platform[2]})"
+
+
+@lru_cache(maxsize=1)
+def get_device_id():
+    return socket.gethostname()
+
+
+@lru_cache(maxsize=1)
+def get_software_version():
+    kernel = platform.platform()
+
+    file_os_release = "/etc/os-release"
+
+    if os.path.isfile(file_os_release):
+        with open(file_os_release, "r") as f:
+            lines = f.readlines()
+
+        os_name_line = [line for line in lines if line.startswith("NAME=")][0]
+        os_version_line = [line for line in lines
+                           if line.startswith("VERSION=")][0]
+
+        os_name = os_name_line.split("=")[1].strip().strip("\"")
+        os_version = os_version_line.split("=")[1].strip().strip("\"")
+
+        if os_name and os_version:
+            return f"{os_name} {os_version}\n{kernel}"
+
+    return kernel
+
+
+def get_byte(data):
+    if type(data) is bytes:
+        return data
+    elif type(data) is int:
+        return bytes([data])
+    elif type(data) is str:
+        return struct.pack(">" + str(len(data)) + "s", data.encode("utf-8"))
+    raise ValueError("Unknown type.")
+
+
+def pack_data(eth_type, data):
+    bdata = get_byte(data)
+    blen = len(bdata)
+    return struct.pack(f"!HH{blen}s", eth_type, blen + 4, bdata)
+
+
+class MACAddress:
+    """
+    Supported MAC address formats:
+    * MM:MM:MM:SS:SS:SS
+    * MM-MM-MM-SS-SS-SS
+    * MMM.MMM.SSS.SSS
+    """
+
+    DST_CDP = "01:00:0c:cc:cc:cc"
+    DST_CSTP = "01:80:c2:00:00:00"
+
+    def __init__(self, address):
+        self.address = address.lower()
+
+        addr_len = len(bytes(self))
+        if addr_len != 6:
+            raise ValueError(f"Expected address length is 6, got {addr_len}.")
+
+    def __bytes__(self):
+        hex_address = self.address.replace(":", "")
+        hex_address = hex_address.replace(".", "")
+        hex_address = hex_address.replace("-", "")
+        return bytes.fromhex(self.address.replace(":", ""))
+
+
+class EthernetFrame:
+    def __init__(self, dst_address="", src_address="", llc_header=None,
+                 payload=None):
+        self.src_address = MACAddress(src_address)
+        self.dst_address = MACAddress(dst_address)
+
+        self.llc_header = llc_header
+        self.payload = payload
+
+    def __bytes__(self):
+        bllc_header = bytes(self.llc_header)
+        bpayload = bytes(self.payload)
+
+        frame = bytes(self.dst_address) + bytes(self.src_address)
+        frame += struct.pack(">H", len(bllc_header) + len(bpayload))
+        frame += bytes(bllc_header) + bytes(bpayload)
+
+        return frame
+
+    def send(self, interface):
+        try:
+            s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
+        except socket.error:
+            raise RuntimeError("Can't send package. Please run as root.")
+        s.bind((interface, 0))
+        s.send(bytes(self))
+
+
+class LLCPackage:
+    ORG_CISCO = b"\x00\x00\x0c"
+
+    def __init__(self, dsap="", snap="", control_field="",
+                 organization_code="", pid=""):
+        self.dsap = dsap
+        self.snap = snap
+        self.control_field = control_field
+        self.organization_code = organization_code
+        self.pid = pid
+
+    def set_cdp(self):
+        self.dsap = b"\xaa"
+        self.snap = b"\xaa"
+        self.control_field = b"\x03"
+        self.organization_code = self.ORG_CISCO
+        self.pid = b"\x20\x00"
+
+    def set_stp(self):
+        self.dsap = b"\x42"
+        self.snap = b"\x42"
+        self.control_field = b"\x03"
+        self.organization_code = ""
+        self.pid = ""
+
+    def __bytes__(self):
+        bin_data = b"".join([
+            self.dsap,
+            self.snap,
+            self.control_field,
+            self.organization_code,
+            self.pid
+        ])
+
+        return bin_data
+
+
+class CDPPackage:
+    DEVICE_ID = 0x0001
+    ADDRESSES = 0x0002
+    PORT_ID = 0x0003
+    CAPABILITIES = 0x0004
+    SOFTWARE_VERSION = 0x0005
+    PLATFORM = 0x0006
+    PROTOCOL_HELO = 0x0008
+    VTP_MANAGEMENT_DOMAIN = 0x0009
+    TRUST_BITMAP = 0x0012
+    UNTRUSTED_PORT_COS = 0x0013
+    MANAGEMENT_ADDRESSES = 0x0016
+    NATIVE_VLAN = 0x000a
+    DUPLEX = 0x000b
+    POWER_AVAILABLE = 0x001a
+
+    def __init__(self, device_id="", software_version="", platform="",
+                 addresses="", port_id="", capabilities="", protocol_helo="",
+                 vtp_management_domain="", native_vlan="", duplex="",
+                 trust_bitmap="", untrusted_port_cos="",
+                 management_addresses="", power_available=""):
+
+        self.device_id = device_id
+        self.software_version = software_version
+        self.platform = platform
+        self.addresses = addresses
+        self.port_id = port_id
+        self.capabilities = capabilities
+        self.protocol_helo = protocol_helo
+        self.vtp_management_domain = vtp_management_domain
+        self.native_vlan = native_vlan
+        self.duplex = duplex
+        self.trust_bitmap = trust_bitmap
+        self.untrusted_port_cos = untrusted_port_cos
+        self.management_addresses = management_addresses
+        self.power_available = power_available
+
+        self.version = 2  # cdp version
+        self.ttl = 180  # ttl in seconds, 0<= TTL <=255
+        self.checksum = 0
+
+    def get_checksum(self):
+        # https://tools.ietf.org/html/rfc791
+        data = self._get_bytes()
+
+        # pad data, for more details about the special handling of \x80, see:
+        # https://www.wireshark.org/lists/wireshark-bugs/200901/msg00077.html
+        if len(data) % 2:
+            if ord(chr(data[-1])) <= ord(b"\x80"):
+                pad = b"\x00"
+            else:
+                pad = b"\xff"
+            data = data[:-1] + pad + bytes([data[-1]])
+
+        # Checksum calculation code borrowed from @houluy
+        # Source: https://github.com/houluy/UDP
+        checksum = 0
+        data_len = len(data)
+        for i in range(0, data_len, 2):
+            w = (data[i] << 8) + (data[i + 1])
+            checksum += w
+        checksum = (checksum >> 16) + (checksum & 0xFFFF)
+        checksum = ~checksum & 0xFFFF
+
+        return checksum
+
+    def _get_bytes(self, checksum=0):
+        bdata_list = []
+
+        bdata_list += [struct.pack("!BBH", self.version, self.ttl, checksum)]
+
+        fields = [
+            (CDPPackage.DEVICE_ID, self.device_id),
+            (CDPPackage.SOFTWARE_VERSION, self.software_version),
+            (CDPPackage.PLATFORM, self.platform),
+            (CDPPackage.PORT_ID, self.port_id),
+        ]
+
+        bdata_list += [pack_data(field[0], field[1]) for field in fields]
+
+        bdata = bytes().join(bdata_list)
+
+        return bdata
+
+    def __bytes__(self):
+        checksum = self.get_checksum()
+        return self._get_bytes(checksum=checksum)
+
+
+if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser(description="Send CDP packages.")
+
+    parser.add_argument(
+        "-i",
+        "--interface",
+        nargs="+",
+        action="append",
+        help="interface to sende to packet out. (default: all)"
+    )
+
+    parser.add_argument(
+        "--interval",
+        choices=range(0, 300),
+        metavar="[0-300]",
+        default=60,
+        type=int,
+        help="Interval in seconds. If greater than 0, packages will be " +
+        "sent until the program is terminated. (default: 60)"
+    )
+
+    parser.add_argument(
+        "-s",
+        "--software-version",
+        action="store",
+        help="Set the  software-version string manually (default: autodetect)"
+    )
+
+    parser.add_argument(
+        "-p",
+        "--platform",
+        action="store",
+        help="Set the platform string manually (default: autodetect)"
+    )
+
+    parser.add_argument(
+        "-d",
+        "--deviceid",
+        action="store",
+        help="Set the device string manually (default: autodetect)"
+    )
+
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="For debuging: print a message when a package is sent."
+    )
+
+    args = parser.parse_args()
+
+    # initialize LLC package
+    llc_pkg = LLCPackage()
+    llc_pkg.set_cdp()
+
+    # initialize CDP package
+    cdp_pkg = CDPPackage()
+
+    # gather system information for the CDP package
+    if args.deviceid:
+        cdp_pkg.device_id = args.deviceid
+    else:
+        cdp_pkg.device_id = get_device_id()
+
+    if args.platform:
+        cdp_pkg.platform = args.platform
+    else:
+        cdp_pkg.platform = get_platform()
+
+    if args.software_version:
+        cdp_pkg.software_version = args.software_version
+    else:
+        cdp_pkg.software_version = get_software_version()
+
+    # send CDP package in a loop
+    while True:
+
+        # check valid interfaces on each run for a better
+        # handling of network modifications
+        selected_interfaces = get_valid_interfaces()
+        if args.interface:
+            selected_interfaces = [(interface, address)
+                          for interface, address in selected_interfaces
+                          if [interface] in args.interface]
+
+        # send the package on each interface
+        for interface, address in selected_interfaces:
+            cdp_pkg.port_id = interface
+            cdp_pkg.addresses = get_addresses(interface)
+
+            ethernet_package = EthernetFrame(
+                MACAddress.DST_CDP,
+                address,
+                llc_pkg,
+                cdp_pkg
+            )
+            ethernet_package.send(interface)
+            if args.debug:
+                print(f"CDP package sent on interface {interface}.")
+
+        # exit loop if interval is 0
+        if args.interval == 0:
+            break
+
+        time.sleep(args.interval)
+
+# vim: set ts=4 sw=4 et

@@ -1,0 +1,11 @@
+[Unit]
+Description=Cisco Discovery Protocol (CDP) daemon
+After=network.target
+Documentation=https://github.com/frei-style/pycdpd
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/pycdpd
+
+[Install]
+WantedBy=multi-user.target
