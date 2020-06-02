@@ -20,13 +20,14 @@ Copy the daemon.
 ```
 sudo cp pycdpd /usr/local/bin/
 ```
-Correct the permissions.
-```
-sudo chmod u+rx /usr/local/bin/pycdpd
-```
 Copy the service file for systemd.
 ```
 sudo cp systemd/pycdpd.service /etc/systemd/system/
+```
+Correct the permissions.
+```
+sudo chmod 700 /usr/local/bin/pycdpd
+sudo chmod 644 /etc/systemd/system/pycdpd.service
 ```
 Reload systemd.
 ```
