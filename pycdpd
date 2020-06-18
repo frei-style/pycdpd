@@ -541,9 +541,10 @@ if __name__ == "__main__":
         # handling of network modifications
         selected_interfaces = get_valid_interfaces()
         if args.interface:
-            selected_interfaces = [(interface, address)
-                          for interface, address in selected_interfaces
-                          if [interface] in args.interface]
+            selected_interfaces = [
+                (interface, address)
+                for interface, address in selected_interfaces
+                if [interface] in args.interface]
 
         # send the package on each interface
         for interface, address in selected_interfaces:
