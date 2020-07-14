@@ -5,6 +5,8 @@ This is a daemon to send out cdp packages.
 
 Copyright (C) 2020 Manuel Frei
 
+PoE budget extension for 802.3at devices by Lucas 'wb7' Garte
+
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 3 of the License, or
@@ -32,9 +34,9 @@ import subprocess
 from functools import lru_cache
 
 __author__ = "Manuel Frei"
-__credits__ = ["Manuel Frei"]
+__credits__ = ["Manuel Frei", "Lucas Garte"]
 __license__ = "GPLv3"
-__version__ = "0.1"
+__version__ = "0.2"
 __maintainer__ = "Manuel Frei"
 __email__ = "github@frei-style.net"
 __status__ = "Prototype"
@@ -391,7 +393,7 @@ class CDPPackage:
                  addresses="", port_id="", capabilities="", protocol_helo="",
                  vtp_management_domain="", native_vlan="", duplex="",
                  trust_bitmap="", untrusted_port_cos="",
-                 management_addresses="", power_available=""):
+                 management_addresses="", power_available="", request=""):
 
         self.device_id = device_id
         self.software_version = software_version
@@ -411,6 +413,8 @@ class CDPPackage:
         self.version = 2  # cdp version
         self.ttl = 180  # ttl in seconds, 0<= TTL <=255
         self.checksum = 0
+
+        self.request = request # request for poe
 
     def get_checksum(self):
         # https://tools.ietf.org/html/rfc791
@@ -450,6 +454,13 @@ class CDPPackage:
         ]
 
         bdata_list += [pack_data(field[0], field[1]) for field in fields]
+
+        if args.request:
+            request = self.request
+            request = hex(request).lstrip("0x").rstrip("L")
+            management = hex(12345).lstrip("0x").rstrip("L")
+            power = hex(20000).lstrip("0x").rstrip("L")
+            bdata_list += [struct.pack(f"!HH{8}s", CDPPackage.POWER_AVAILABLE, 12, bytes.fromhex(request) + bytes.fromhex(management) + bytes(2) + bytes.fromhex(power))]
 
         bdata = bytes().join(bdata_list)
 
@@ -504,6 +515,13 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
+        "-r",
+        "--request",
+        type=int,
+        help="Set the request id for PoE budget requests. Daemon will stop after sending PoE budget ACK for 20 Watts. Use it only with 802.3at midspan!"
+    )
+
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="For debuging: print a message when a package is sent."
@@ -534,6 +552,12 @@ if __name__ == "__main__":
     else:
         cdp_pkg.software_version = get_software_version()
 
+    if args.request:
+        cdp_pkg.request = args.request
+        killswitch = 1
+    else:
+        killswitch = 0
+
     # send CDP package in a loop
     while True:
 
@@ -560,6 +584,10 @@ if __name__ == "__main__":
             ethernet_package.send(interface)
             if args.debug:
                 print(f"CDP package sent on interface {interface}.")
+
+        # exit if request id is set
+        if killswitch == 1:
+            break
 
         # exit loop if interval is 0
         if args.interval == 0:
