@@ -42,6 +42,34 @@ Start the service.
 systemctl start pycdpd
 ```
 
+## Usage
+```
+usage: pycdpd [-h] [-i INTERFACE [INTERFACE ...]] [--interval [0-300]]
+              [-s SOFTWARE_VERSION] [-p PLATFORM] [-d DEVICEID] [-r REQUEST]
+              [--debug]
+
+Send CDP packages.
+
+optional arguments:
+  -h, --help            show this help message and exit
+  -i INTERFACE [INTERFACE ...], --interface INTERFACE [INTERFACE ...]
+                        interface to sende to packet out. (default: all)
+  --interval [0-300]    Interval in seconds. If greater than 0, packages will
+                        be sent until the program is terminated. (default: 60)
+  -s SOFTWARE_VERSION, --software-version SOFTWARE_VERSION
+                        Set the software-version string manually (default:
+                        autodetect)
+  -p PLATFORM, --platform PLATFORM
+                        Set the platform string manually (default: autodetect)
+  -d DEVICEID, --deviceid DEVICEID
+                        Set the device string manually (default: autodetect)
+  -r REQUEST, --request REQUEST
+                        Set the request id for PoE budget requests. Daemon
+                        will stop after sending PoE budget ACK for 20 Watts.
+                        Use it only with 802.3at midspan!
+  --debug               For debuging: print a message when a package is sent.
+  ```
+
 ## Examples
 
 ### Package in Wireshark
